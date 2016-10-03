@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -114,34 +116,40 @@ func InitLongPoll(tocken string) (string, error) {
 
 	vkResp, err := client.Do(req)
 	if err != nil {
+		log.Println("InitLongPoll function error: ", err)
 		return "", err
 	}
+	defer vkResp.Body.Close()
 
 	vkMess, err := ioutil.ReadAll(vkResp.Body)
 	if err != nil {
+		log.Println("InitLongPoll function error: ", err)
 		return "", err
 	}
 
-	vkResp.Body.Close()
+	log.Println("InitLongPoll function success: ", string(vkMess))
 	return string(vkMess), nil
 }
 
 func (sessionAttrs *LongPollAttr) GetEvent() (jsonBody, error) {
-	connectionResp, err := http.Get("https://" + sessionAttrs.Resp.Server + "?act=a_check&key=" +
+	resp, err := http.Get("https://" + sessionAttrs.Resp.Server + "?act=a_check&key=" +
 		sessionAttrs.Resp.Key + "&ts=" + fmt.Sprintf("%d", sessionAttrs.Resp.Ts) + "&wait=25&mode=2 ")
 	if err != nil {
+		log.Println("LongPollAttr.GetEvent function error: ", err)
 		return jsonBody{}, err
 	}
+	defer resp.Body.Close()
 
-	message, err := ioutil.ReadAll(connectionResp.Body)
+	message, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		log.Println("LongPollAttr.GetEvent function error: ", err)
 		return jsonBody{}, err
 	}
-	connectionResp.Body.Close()
 
 	var body jsonBody
 	err = json.Unmarshal(message, &body)
 	if err != nil {
+		log.Println("LongPollAttr.GetEvent function error: ", err)
 		return jsonBody{}, err
 	}
 
@@ -158,36 +166,36 @@ func GetVKGroupMessage(message *jsonBody) (VKGroupMessage, error) {
 
 	if !ok {
 		return VKGroupMessage{}, errors.New("Convertion error")
-	} else {
-		if 4 == messageType {
-			vkMessage := VKGroupMessage{
-				MessageId:   int(message.Updates[0][1].(float64)),
-				Flags:       int(message.Updates[0][2].(float64)),
-				FromId:      int(message.Updates[0][3].(float64)),
-				Timestamp:   int(message.Updates[0][4].(float64)),
-				Subject:     message.Updates[0][5].(string),
-				Text:        message.Updates[0][6].(string),
-				Attachments: message.Updates[0][7].(map[string]interface{}),
-			}
-			return vkMessage, nil
-		} else {
-			return VKGroupMessage{}, errors.New("Not message event")
+	}
+
+	if 4 == messageType {
+		vkMessage := VKGroupMessage{
+			MessageId:   int(message.Updates[0][1].(float64)),
+			Flags:       int(message.Updates[0][2].(float64)),
+			FromId:      int(message.Updates[0][3].(float64)),
+			Timestamp:   int(message.Updates[0][4].(float64)),
+			Subject:     message.Updates[0][5].(string),
+			Text:        message.Updates[0][6].(string),
+			Attachments: message.Updates[0][7].(map[string]interface{}),
 		}
+		return vkMessage, nil
+	} else {
+		return VKGroupMessage{}, errors.New("Not message event")
 	}
 }
 
-func (sessionAttrs *LongPollAttr) GetImageByMessageId(MessageId int, accessTocken string) (VKMessage, error) {
-	getMessageResp, err := http.Get(apiURL + "messages.getById?v=5.41&access_token=" +
-		accessTocken + "&message_ids=" + strconv.Itoa(MessageId))
+func (sessionAttrs *LongPollAttr) GetImageByMessageId(MessageId int, accessToken string) (VKMessage, error) {
+	resp, err := http.Get(apiURL + "messages.getById?v=5.41&access_token=" +
+		accessToken + "&message_ids=" + strconv.Itoa(MessageId))
 	if err != nil {
 		return VKMessage{}, err
 	}
+	defer resp.Body.Close()
 
-	messageInfo, err := ioutil.ReadAll(getMessageResp.Body)
+	messageInfo, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return VKMessage{}, err
 	}
-	getMessageResp.Body.Close()
 
 	var vkMessageResp VKMessage
 	err = json.Unmarshal(messageInfo, &vkMessageResp)
@@ -198,8 +206,8 @@ func (sessionAttrs *LongPollAttr) GetImageByMessageId(MessageId int, accessTocke
 	return vkMessageResp, nil
 }
 
-func (photo Photos) GetMessagesUploadServer(accessTocken string) (MessagesUploadServer, error) {
-	resp, err := http.Get(apiURL + "photos.getMessagesUploadServer?v=5.56&access_token=" + accessTocken)
+func (photo Photos) GetMessagesUploadServer(accessToken string) (MessagesUploadServer, error) {
+	resp, err := http.Get(apiURL + "photos.getMessagesUploadServer?v=5.56&access_token=" + accessToken)
 	if err != nil {
 		return MessagesUploadServer{}, err
 	}
@@ -230,7 +238,6 @@ func (photo Photos) SendPhotoToUploadServer(upServer *MessagesUploadServer, img 
 	if _, err = io.Copy(fileWriter, img); err != nil {
 		return UploadedPhoto{}, err
 	}
-
 	multWriter.Close()
 
 	resp, err := http.DefaultClient.Post(upServer.Response.UploadURL, multWriter.FormDataContentType(), &buffer)
@@ -253,15 +260,15 @@ func (photo Photos) SendPhotoToUploadServer(upServer *MessagesUploadServer, img 
 	return p, nil
 }
 
-func (p Photos) SaveMessagesPhoto(photo *UploadedPhoto, accessTocken string) (AttachPhoto, error) {
+func (p Photos) SaveMessagesPhoto(photo *UploadedPhoto, accessToken string) (AttachPhoto, error) {
 	resp, err := http.Get(apiURL + "photos.saveMessagesPhoto?v=5.56&access_token=" +
-		accessTocken + "&photo=" + photo.Photo + "&server=" + strconv.Itoa(photo.Server) +
+		accessToken + "&photo=" + photo.Photo + "&server=" + strconv.Itoa(photo.Server) +
 		"&hash=" + photo.Hash)
-	defer resp.Body.Close()
 
 	if err != nil {
 		return AttachPhoto{}, err
 	}
+	defer resp.Body.Close()
 
 	jsonMessage, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -277,21 +284,47 @@ func (p Photos) SaveMessagesPhoto(photo *UploadedPhoto, accessTocken string) (At
 	return savedPhoto, nil
 }
 
-func (message Messages) Send(userId int, mess string, attachedPhoto *AttachPhoto, accessTocken string) error {
+func (m Messages) Send(userId int, mess string, attachedPhoto *AttachPhoto, accessToken string) error {
 	random := rand.New(rand.NewSource(time.Now().UnixNano()))
+	attachment := ""
+	if attachedPhoto != nil {
+		attachment = "&attachment=photo" + strconv.Itoa(attachedPhoto.Responses[0].OwnerId) +
+			"_" + strconv.Itoa(attachedPhoto.Responses[0].Id)
+	}
 	resp, err := http.DefaultClient.Get(apiURL + "messages.send?v=5.56&access_token=" +
-		accessTocken + "&user_id=" + strconv.Itoa(userId) + "&message=" + mess +
-		"&random_id=" + strconv.Itoa(random.Int()) + "&attachment=photo" +
-		strconv.Itoa(attachedPhoto.Responses[0].OwnerId) + "_" + strconv.Itoa(attachedPhoto.Responses[0].Id))
+		accessToken + "&user_id=" + strconv.Itoa(userId) + "&message=" + url.QueryEscape(mess) +
+		"&random_id=" + strconv.Itoa(random.Int()) + attachment)
+	if err != nil {
+		log.Println("Messages.Send function error: ", err)
+		return err
+	}
 	defer resp.Body.Close()
+
+	message, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		log.Println("Messages.Send function error: ", err)
 		return err
 	}
 
-	_, err = ioutil.ReadAll(resp.Body)
+	log.Println("Messages.Send function success: ", string(message))
+	return nil
+}
+
+func (m Messages) MarkAsRead(message_id int, accessToken string) error {
+	resp, err := http.DefaultClient.Get(apiURL + "messages.markAsRead?v=5.56&access_token=" +
+		accessToken + "&message_ids=" + strconv.Itoa(message_id))
 	if err != nil {
+		log.Println("Messages.MarkAsRead function error: ", err)
+		return err
+	}
+	defer resp.Body.Close()
+
+	message, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Println("Messages.MarkAsRead function error: ", err)
 		return err
 	}
 
+	log.Println("Messages.MarkAsRead function success: ", string(message))
 	return nil
 }
